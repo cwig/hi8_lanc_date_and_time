@@ -22,6 +22,6 @@ This can be done by downloading the Arduino IDE and flashing "arduino_atmega328.
 
 ### 3. Record LANC packets / View Results
 
-Use this repo's web app to record and view the LANC data (using the Web Serial API). Detailed instructions are found on the web app.
+Use this repo's web app to record and view the LANC data (using the Web Serial API). Detailed instructions are found on the web app. The web app can be found here: [https://cwig.github.io/hi8_lanc_date_and_time](https://cwig.github.io/hi8_lanc_date_and_time)
 
 
