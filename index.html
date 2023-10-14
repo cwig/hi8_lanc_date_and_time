@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LANC Decoder</title>
+
+    <link rel="stylesheet" href="styles.css">
+    <script src="lanc_decoder.js"></script>
+    <script src="tools.js"></script>
+    <script src="port_manager.js"></script>
+    <script src="recording_manager.js"></script>
+    <script src="compressed_data_handler.js"></script>
+</head>
+
+<body>
+
+    <div class="container">
+        <h1>Hi8 LANC Recorder</h1>
+        <p>
+            The "LANC Recorder" captures the raw LANC data.
+            Then then use the "LANC Report Decoder" to parse the raw data.
+            This is a two step process so that if you want to improve the 
+            LANC decoding, you don't need to re-record the data.
+        </p>
+        <p>
+            This tool uses the Web Serial API (Chrome only) to connect to a LANC device. 
+            You need a custom made USB LANC adapter. Building instructions can be found here: 
+            <a href="https://github.com/Novgorod/LANC-USB-GUI"> github.com/Novgorod/LANC-USB-GUI </a>
+            (The LANC-USB-GUI page has a nice tool for controlling the camera as well).
+            This tool's Github page also provides the source for the older ATMEGA328P Arduino boards.
+            All proessing happens in the browser, no data is sent to a server.
+        </p>
+
+        <h3>Steps</h3>
+        <ol>
+            <li>
+                Click "Connect to LANC device" and select the LANC device (Maybe show up as "Arduino"). Once it is connected
+                it will display the current date and time which will indicate it is receiving data.
+            </li>
+            <li>
+                Rewind your camera to the beginning of the tap. Click "Start Recording" to start capturing packets.
+            </li>
+            <li>
+                Click "play" on your camera. You can run the tape in fast forward and it will still be able to capture
+                enough packets to get the date/time of each scene. If you need more exact times, you can run the tape in play mode.
+            </li>
+            <li>Click "Stop Recording" which will create a link to save the file.</li>
+            <li>Click the new link to downlaod it. After downloading a recording, you can load it into the parsing tool.</li>
+        </ol>
+
+        <p>
+            (The recording is compressed so it should be smaller than the bytes value displayed during recording.)
+        </p>
+        
+
+        <button id="open_serial_port">Connect To LANC</button>
+        <button id="recording" disabled>Start Recording</button>
+
+        <h3>Hi8 LANC Status</h3>
+        <p>Date / Time: <span id="time"></span></p>
+        <p>Data recorded (uncompressed): <span id="frames"></span></p>
+
+        <h3>Session Recordings</h3>
+        <p>Warning these are lost on refresh</p>
+        <div id="recordings">
+
+        </div>
+
+    </div>
+
+    <div class="container">
+        <h1>LANC Decoder</h1>
+        <p>
+            This tool parses the raw LANC recordings into 5 minute intervals. In the report, the earliest recorded time is set to 00:00:00,
+            so if you start mid-tape, the first time will still be 00:00:00.
+        </p>
+
+        <p>
+            There may be inaccurate times reported. LANC sends "update" packets with small amounts of data.
+            For the date and time, the packets are grouped by year/month, hours/minutes, days, and seconds. As a
+            results you can get a situation where the latest time/date is not correct. For example the date might be 
+            2004-01-01 and the next scene is on 2004-06-30. If the packet for year/month is first, the date will briefly
+            be set to 2004-06-01 and then when the packet for day is received, it will be set to 2004-06-30.
+            I've handled some of these issues, but it may not be entirely fixed. 
+        </p>
+
+        <button id="load_file">Load File</button>
+
+        <h3>Timing Report</h3>
+        <div id="report"></div>
+    </div>
+</body>
+    <script>
+
+
+        let portManager = new PortManager();
+        let recordingDecoder = new LancDecoder();
+        let currentRecording = null;
+
+        recordingDecoder.dataCodeListener = (date) => {
+            document.getElementById("time").innerHTML = date.toLocaleString();
+        }
+
+        portManager.streamListener = (data) => {
+            recordingDecoder.parse(data);
+
+            if(currentRecording != null) {
+                currentRecording.gotData(data);
+                const bytes = currentRecording.totalBytes;
+                //bytes to readable
+                const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+                if (bytes == 0) return '0 Byte';
+                const i = parseInt(Math.floor(Math.log(bytes) / Math.log(1024)));
+                const totalBytes = Math.round(bytes / Math.pow(1024, i), 2) + ' ' + sizes[i];
+                document.getElementById("frames").innerHTML = totalBytes;
+            }
+        }
+
+        portManager.connectedListener = (connected) => {
+            if(connected) {
+                document.getElementById("recording").disabled = false;
+                document.getElementById("open_serial_port").innerHTML = "Connected";
+                document.getElementById("time").innerHTML = "Waiting for first date...";
+
+                currentRecording = new RecordingMananger(portManager.port.readable);
+
+                currentRecording.gotRecordingListener = (data) => {
+
+                    const currentDate = new Date();
+                    const isoDateString = currentDate.toLocaleString();
+                    const safeFilename = isoDateString.replace(/[^a-zA-Z0-9]/g, '_');
+
+                    const a = document.createElement("a");
+                    document.getElementById("recordings").appendChild(a);
+                    a.innerHTML = "Download Recording " + safeFilename;
+                    a.download = "recording_" + safeFilename + ".bin";
+                    a.href = URL.createObjectURL(new Blob([data], {type: "application/octet-stream"}));
+                    document.getElementById("recordings").appendChild(document.createElement("br"));
+
+                }
+
+            } else {
+                document.getElementById("recording").disabled = true;
+                document.getElementById("open_serial_port").innerHTML = "Connect To LANC";
+                const data = currentRecording.getData();
+                currentRecording = null;
+            }
+        }
+
+        document.getElementById("open_serial_port").addEventListener("click", function(){
+            portManager.requestOpen();
+        });
+
+        document.getElementById("recording").addEventListener("click", async function(){
+
+
+            if(currentRecording.recording) {
+                document.getElementById("recording").innerHTML = "Start Recording";
+            } else {
+                document.getElementById("recording").innerHTML = "Stop Recording";
+            }
+
+            currentRecording.toggleRecording();
+
+
+        });
+
+
+
+
+        const FIVE_MIN=5*60*1000;
+
+        let decoder = new LancDecoder();;
+
+        let pairs = [];
+        let lastDate = null;
+        decoder.dataCodeListener = (date)=>{
+            lastDate = date;
+        }
+
+        decoder.rtDataListener = (v)=>{
+
+            if(lastDate != null) {
+
+                if(pairs.length > 0) {
+                    let lastPair = pairs[pairs.length-1];
+                    if(Math.abs(lastPair[0] - lastDate) < FIVE_MIN) {
+                        return;
+                    }
+                }
+
+
+                pairs.push([
+                    lastDate,
+                    v
+                ])
+                lastDate = null;
+            }
+        }
+
+        async function processFile(file) {
+
+            document.getElementById("report").innerHTML = "";
+            while (document.getElementById("report").firstChild) {
+                document.getElementById("report").removeChild(document.getElementById("report").firstChild);
+            }
+
+            decoder.reset();
+
+            const ds = new DecompressionStream('gzip');
+            let stream_in = file.stream().pipeThrough(ds);
+
+            for await (const chunk of streamAsyncIterator(stream_in)) {
+                decoder.parse(chunk);
+            }
+
+
+            //Find min time
+            let min = pairs.reduce((a, b) => a[1] < b[1] ? a : b);
+
+            for(let pair of pairs) {
+
+                let date = new Date();
+                let total_seconds = pair[1] - min[1]
+                let hours = Math.floor(total_seconds / 3600);
+                let minutes = Math.floor((total_seconds - (hours * 3600)) / 60);
+                let seconds = total_seconds - (hours * 3600) - (minutes * 60);
+
+                let time = String(hours).padStart(2, '0') + ":" + String(minutes).padStart(2, '0') + ":" + String(seconds).padStart(2, '0');
+                
+                // console.log(pair[0].toLocaleString(), pair[1]);
+                document.getElementById("report").innerHTML += time + " -- " + pair[0].toLocaleString() + "<br>";
+            }
+
+        }
+
+        document.getElementById("load_file").addEventListener("click", function() {
+            let input = document.createElement('input');
+            input.type = 'file';
+            input.onchange = e => { 
+                let file = e.target.files[0]; 
+                processFile(file);
+            }
+            input.click();
+        });
+
+        async function start() {
+
+            const ds = new DecompressionStream('gzip');
+            const response = await fetch('recording_25564.bin');
+            const blob_in = await response.blob();
+            const stream_in = blob_in.stream().pipeThrough(ds);
+
+            for await (const chunk of streamAsyncIterator(stream_in)) {
+                decoder.parse(chunk);
+            }
+
+        }
+        
+    </script>
+</html>
